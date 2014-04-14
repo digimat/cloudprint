@@ -7,7 +7,8 @@ SERVICE=${1:-$DEFAULTSERVICE}
 echo "Launching service [$SERVICEPATH/$SERVICE]..."
 
 cd $SERVICEPATH
-git pull
+git fetch origin
+git reset --hard origin/masters
  
 if [ -f $SERVICEPATH/$SERVICE ]; then
 	logger "Launching service [$SERVICE]"
