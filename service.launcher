@@ -1,13 +1,39 @@
 #!/bin/sh
 
-DEFAULTSERVICE=/home/pi/python/cloudprint/cloudprint.py
+SERVICEPATH=/home/pi/python/cloudprint
+DEFAULTSERVICE=cloudprint.py
 SERVICE=${1:-$DEFAULTSERVICE}
 
-echo "Launching service [$SERVICE]..."
+echo "Launching service [$SERVICEPATH/$SERVICE]..."
 
-if [ -f $SERVICE ]; then
+cd $SERVICEPATH
+
+# fetch changes, git stores them in FETCH_HEAD
+git fetch
+ 
+# check for remote changes in origin repository
+newUpdatesAvailable=`git diff HEAD FETCH_HEAD`
+if [ "$newUpdatesAvailable" != "" ]
+then
+	# create the fallback
+	git branch fallbacks
+	git checkout fallbacks
+
+	git add .
+	git add -u
+	git commit -m `date "+%Y-%m-%d"`
+	echo "fallback created"
+
+	git checkout master
+	git merge FETCH_HEAD
+	echo "merged updates"
+else
+	echo "no updates available"
+fi
+
+if [ -f $SERVICEPATH/$SERVICE ]; then
 	logger "Launching service [$SERVICE]"
-	exec /usr/bin/python $SERVICE
+	exec /usr/bin/python $SERVICEPATH/$SERVICE
 fi
 
 logger "$0:unable to find service [$SERVICE]"
