@@ -8,7 +8,7 @@ echo "Launching service [$SERVICEPATH/$SERVICE]..."
 
 cd $SERVICEPATH
 git fetch origin
-git reset --hard origin/masters
+git reset --hard origin/master
  
 if [ -f $SERVICEPATH/$SERVICE ]; then
 	logger "Launching service [$SERVICE]"
