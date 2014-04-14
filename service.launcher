@@ -1,0 +1,14 @@
+#!/bin/sh
+
+DEFAULTSERVICE=/home/pi/python/cloudprint/cloudprint.py
+SERVICE=${1:-$DEFAULTSERVICE}
+
+echo "Launching service [$SERVICE]..."
+
+if [ -f $SERVICE ]; then
+	logger "Launching service [$SERVICE]"
+	exec /usr/bin/python $SERVICE
+fi
+
+logger "$0:unable to find service [$SERVICE]"
+/bin/sleep 15
