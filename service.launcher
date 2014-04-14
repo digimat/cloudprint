@@ -7,34 +7,9 @@ SERVICE=${1:-$DEFAULTSERVICE}
 echo "Launching service [$SERVICEPATH/$SERVICE]..."
 
 cd $SERVICEPATH
-
-
-# fetch changes, git stores them in FETCH_HEAD
-echo "Checking for upgrade..."
-git fetch
+git pull
  
-# check for remote changes in origin repository
-newUpdatesAvailable=`git diff HEAD FETCH_HEAD`
-if [ "$newUpdatesAvailable" != "" ]
-then
-	# create the fallback
-	git branch fallbacks
-	git checkout fallbacks
-
-	git add .
-	git add -u
-	git commit -m `date "+%Y-%m-%d"`
-	echo "fallback created."
-
-	git checkout master
-	git merge FETCH_HEAD
-	echo "merged updates."
-else
-	echo "no updates available."
-fi
-
 if [ -f $SERVICEPATH/$SERVICE ]; then
-	echo "starting service..."
 	logger "Launching service [$SERVICE]"
 	exec /usr/bin/python $SERVICEPATH/$SERVICE
 fi
