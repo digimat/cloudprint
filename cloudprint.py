@@ -13,9 +13,10 @@ import pickle
 import uuid
 import md5
 import base64
-import blowfish
 import requests
 import json
+import subprocess
+from Crypto.Cipher import Blowfish
 
 # printer manual http://www.adafruit.com/datasheets/A2-user%20manual.pdf
 
@@ -118,8 +119,10 @@ class CPWebservice(object):
 
 	def processResponse(self, data, key):
 		try:
-			bf=blowfish.Blowfish(key)
-			response=bf.decryptstr(base64.b64decode(data))
+			#bf=blowfish.Blowfish(key)
+			#response=bf.decryptstr(base64.b64decode(data))
+			bf=Blowfish.BlowfishCipher(key)
+			response=bf.decrypt(base64.b64decode(data))
 			return json.loads(response)
 		except:
 			pass
@@ -579,12 +582,31 @@ class CPMailBox(CPThread):
 					self._imap.expunge()
 					self.logger.info('imap:message %s successfully deleted' % self._mid)
 				except:
-					self.logger.error('imap:error occured while deleting message %d!' % self._mid)
+					self.logger.error('imap:error occured while deleting message %s!' % self._mid)
 					self.disconnect()
 
 
 	def onStart(self):
 		pass
+
+	def reboot(self):
+		subprocess.call("sync")
+		subprocess.call(["reboot"])
+
+	def parseCommand(self, node):
+		while node:
+			try:
+				if node.nodeType==minidom.Node.ELEMENT_NODE:
+					name=node.nodeName.lower()
+					self.logger.debug('command:%s' % name)
+					if name=='reboot':
+						self.reboot()
+					elif name=='restart':
+						self.parent.stop()
+				node=node.nextSibling
+			except:
+				self.logger.error('command:exception occured!')
+				break
 
 	def parseTicket(self, node):
 		while node:
@@ -638,6 +660,8 @@ class CPMailBox(CPThread):
 					self.printer.reset()
 					self.parseTicket(item.firstChild)
 					self.printer.feed(3)
+				elif name=='command':
+					self.parseCommand(item.firstChild)
 		except:
 			self.logger.error('mailbox:unable to parse xml')
 		return True
