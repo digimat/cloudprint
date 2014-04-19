@@ -1,22 +1,32 @@
-import time
-from threading import Thread
-from threading import Event
 import logging, logging.handlers
-import imaplib2
-import email
 import traceback
-from xml.dom import minidom
-from Adafruit_Thermal import *
-import RPi.GPIO as GPIO
+
 import os
-import pickle
+import time
 import uuid
 import md5
 import base64
-import requests
+import socket
+import fcntl
+import struct
+
+from threading import Thread
+from threading import Event
+import email
 import json
+from xml.dom import minidom
+
+import pickle
 import subprocess
+
+from Adafruit_Thermal import *
+
+import RPi.GPIO as GPIO
+import requests
 from Crypto.Cipher import Blowfish
+import imaplib2
+
+CLOUDPRINT_AGENT='python-cloudprint-rapi0-v0.1.0'
 
 # printer manual http://www.adafruit.com/datasheets/A2-user%20manual.pdf
 
@@ -97,32 +107,56 @@ class CPPersistentData(object):
 
 
 class CPWebservice(object):
-	def __init__(self, logger):
+	def __init__(self, parent, logger):
+		self._parent=parent
 		self._logger=logger
-		self._macaddress=self.macaddr()
+		self._macaddress=self.getMacAddress()
+		self._ipaddress=self.getInterfaceIpAddress('eth0')
+		self.logger.debug('webservice:mac=%s, ip=%s' % (self._macaddress, self._ipaddress))
+
+	@property
+	def parent(self):
+		return self._parent
 
 	@property
 	def logger(self):
-	    return self._logger
+		return self._logger
 
-	def macaddr(self):
+	def getMacAddress(self):
 		return '-'.join('%02X' % ((uuid.getnode() >> 8*i) & 0xff) for i in reversed(xrange(6)))
+
+	def getInterfaceIpAddress(self, ifname='eth0'):
+		try:
+			s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+			return socket.inet_ntoa(fcntl.ioctl(s.fileno(), 
+				0x8915,  # SIOCGIFADDR
+				struct.pack('256s', ifname[:15])
+				)[20:24])		
+		except:
+			pass
 
 	def url(self):
 		return 'http://digimat.ch/phpdev/cloudprint/cloudprint.php'
 
 	def lid(self):
-		return md5.md5(self.macaddr()).hexdigest()
+		return md5.md5(self.getMacAddress()).hexdigest()
 
 	def uuid(self):
 		return str(uuid.uuid4()).lower()
+
+	def uncrypt(self, data, key):
+		try:
+			bf=Blowfish.BlowfishCipher(key)
+			return bf.decrypt(base64.b64decode(data))
+		except:
+			pass
 
 	def processResponse(self, data, key):
 		try:
 			#bf=blowfish.Blowfish(key)
 			#response=bf.decryptstr(base64.b64decode(data))
-			bf=Blowfish.BlowfishCipher(key)
-			response=bf.decrypt(base64.b64decode(data))
+			response=self.uncrypt(data, key)
+			print response
 			return json.loads(response)
 		except:
 			pass
@@ -131,7 +165,9 @@ class CPWebservice(object):
 		try:
 			key=self.uuid()
 			payload['command']=request.lower()
-			payload['lid']=self.macaddr()
+			payload['lid']=self._macaddress
+			payload['lip']=self._ipaddress
+			payload['agent']=CLOUDPRINT_AGENT
 			payload['session']=key
 			url=self.url()
 			self.logger.debug('webservice:request%s]' % str(payload))
@@ -143,14 +179,21 @@ class CPWebservice(object):
 
 		self.logger.error('webservice:request error!')
 
+	def handle(self, handler, payload={}):
+		try:
+			return self.do(handler, payload)
+		except:
+			pass
+
 	def getFactorySettings(self):
-		return self.do('getfactorysettings')
+		return self.handle('getfactorysettings')
 
 	def buttonTap(self):
-		return self.do('buttontap')
+		return self.handle('buttontap')
 
 	def buttonHold(self):
-		return self.do('buttonhold')
+		return self.handle('buttonhold')
+
 
 
 class CPThread(Thread):
@@ -327,7 +370,7 @@ class CPPrinter(object):
 		self.logger.info('printer:device closed')
 
 	def hasPaper(self):
-		self.logger.debug('printer:hasPaper()')
+		#self.logger.debug('printer:hasPaper()')
 		retry=2
 		while retry:
 			try:
@@ -501,10 +544,11 @@ class CPMailBox(CPThread):
 		self._mdata=None
 		self._mid=None
 		self._printer=CPPrinter(self)
+		self._messages=[]
 
 	@property
 	def printer(self):
-	    return self._printer
+		return self._printer
 
 	def disconnect(self):
 		if self._imap:
@@ -666,38 +710,117 @@ class CPMailBox(CPThread):
 			self.logger.error('mailbox:unable to parse xml')
 		return True
 
+	def queueMessage(self, message):
+		self._messages.append(message)
+
+	def processMessageQueue(self):
+		try:
+			if self._messages:
+				message=self._messages[0]
+				self.parseMessage(message)
+				del self._messages[0]
+				return True
+		except:
+			pass
+
 	def onRun(self):
 		while not self.isStopRequest():
-			if not self.printer.hasPaper():
-				self.logger.warning('printer:paper tray empty!')
-				self.sleep(10)
-				continue
+			if self.parent.flagOutOfpaper.isTimeout(2):
+				self.parent.flagOutOfpaper.observe(not self.printer.hasPaper())
 
-			msg=self.fetchMessage()
-			if not msg:
-				self.sleep(15)
-				break
-			try:
-				m=email.message_from_string(msg)
-				if m:
-					self.logger.debug('mailbox:processing message %s' % m['Message-ID'])
-					for part in m.walk():
-						self.logger.debug('mailbox:found message part [%s]' % part.get_content_type())
-						# each part is a either non-multipart, or another multipart message
-						# that contains further parts... Message is organized like a tree
-						if part.get_content_type()=='text/plain':
-							#print part.get_payload()
-							self.parseMessage(part.get_payload().strip())
-			except:
-				self.logger.error('mailbox:error while decoding RFC822 message!')
-			finally:
-				self.deleteMessage()
+			if not self.parent.flagOutOfpaper.input:
+				if self.processMessageQueue():
+					continue
+				msg=self.fetchMessage()
+				if not msg:
+					self.sleep(15)
+					break
+				try:
+					m=email.message_from_string(msg)
+					if m:
+						self.logger.debug('mailbox:processing message %s' % m['Message-ID'])
+						for part in m.walk():
+							self.logger.debug('mailbox:found message part [%s]' % part.get_content_type())
+							# each part is a either non-multipart, or another multipart message
+							# that contains further parts... Message is organized like a tree
+							if part.get_content_type()=='text/plain':
+								#print part.get_payload()
+								self.queueMessage(part.get_payload().strip())
+				except:
+					self.logger.error('mailbox:error while decoding RFC822 message!')
+				finally:
+					self.deleteMessage()
 
 	def onStop(self):
 		self.disconnect()
 
 	def onRelease(self):
 		pass
+
+
+class CPWebserviceFlag(object):
+	def __init__(self, webservice, handler, delay, delayRepeat=0, initialValue=False):
+		self._webservice=webservice
+		self._handler=handler
+		self._delay=delay
+		self._delayRepeat=delayRepeat
+		self._input=bool(initialValue)
+		self._output=self._input
+		self._stamp=0
+		self._trigger=False
+		self._stampTrigger=0
+		self._timer=0
+
+	@property
+	def webservice(self):
+		return self._webservice
+
+	def observe(self, value):
+		value=bool(value)
+		if value!=self._input:
+			self._stamp=time.time()
+			self._input=value
+			self._trigger=False
+		self.manager()
+
+	def trigger(self, repeat=False):
+		try:
+			repeat=int(repeat)
+			payload={'value':self._output, 'repeat':repeat}
+			self._webservice.handle(self._handler, payload)
+			self._trigger=True
+			self._stampTrigger=time.time()
+		except:
+			pass
+
+	def manager(self):
+		if self._input!=self._output:
+			if not self._trigger:
+				if time.time()-self._stamp>=self._delay:
+					self._output=self._input
+					self.webservice.logger.warning('info:%s:%d' % (self._handler, self._output))
+					self.trigger()
+		else:
+			if self._output and self._delayRepeat>0:
+				if time.time()-self._stampTrigger>=self._delayRepeat:
+					self.trigger(True)
+
+	@property
+	def output(self):
+		return bool(self._output)
+
+	# allow things like "if flag:"
+	def __nonzero__(self):
+		return self.output
+
+	@property
+	def input(self):
+		return bool(self._input)
+
+	def isTimeout(self, timeout):
+		if time.time()-self._timer>=timeout:
+			self._timer=time.time()
+			return True
 
 
 class CloudPrint(object):
@@ -709,7 +832,9 @@ class CloudPrint(object):
 		logger.addHandler(socketHandler)
 		self._logger=logger
 
-		self._webservice=CPWebservice(self.logger)
+		self._webservice=CPWebservice(self, self.logger)
+		self.flagOutOfpaper=CPWebserviceFlag(self.webservice, 'outofpaper', 5, 3600*24)
+		self.flagWatchdog=CPWebserviceFlag(self.webservice, 'watchdog', 60, 900)
 
 		self._persistentData=CPPersistentData('cloudprint.pdata')
 		factorySettings=self._webservice.getFactorySettings()
@@ -726,7 +851,6 @@ class CloudPrint(object):
 			self.persistentData['user'], 
 			self.persistentData['password'])
 
-
 	@property
 	def logger(self):
 		return self._logger
@@ -734,6 +858,10 @@ class CloudPrint(object):
 	@property
 	def webservice(self):
 		return self._webservice
+
+	@property
+	def mailbox(self):
+		return self._mailbox
 
 	@property
 	def persistentData(self):
@@ -799,7 +927,7 @@ class CloudPrint(object):
 		if buttonState!=self._lastButtonState:
 			self._lastButtonState=buttonState
 			self._lastButtonTime=t
-		else:                             
+		else:
 			if (t-self._lastButtonTime) >= 2.0:
 				if self._buttonHoldEnable:
 					self.logger.debug('button:onHold()')
@@ -819,6 +947,7 @@ class CloudPrint(object):
 
 	def manager(self):
 		self.buttonManager()
+		self.flagWatchdog.observe(1)
 		self.sleep(0.01)
 
 	def sleep(self, delay):
