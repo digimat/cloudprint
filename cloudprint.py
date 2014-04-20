@@ -12,6 +12,7 @@ import struct
 
 from threading import Thread
 from threading import Event
+from Queue import Queue
 import email
 import json
 from xml.dom import minidom
@@ -122,6 +123,9 @@ class CPWebservice(object):
 	def logger(self):
 		return self._logger
 
+	def flag(self, handler, delay, delayRepeat=0, initialValue=False):
+		return CPWebserviceFlag(self, handler, delay, delayRepeat=0, initialValue=False)
+
 	def getMacAddress(self):
 		return '-'.join('%02X' % ((uuid.getnode() >> 8*i) & 0xff) for i in reversed(xrange(6)))
 
@@ -151,16 +155,6 @@ class CPWebservice(object):
 		except:
 			pass
 
-	def processResponse(self, data, key):
-		try:
-			#bf=blowfish.Blowfish(key)
-			#response=bf.decryptstr(base64.b64decode(data))
-			response=self.uncrypt(data, key)
-			print response
-			return json.loads(response)
-		except:
-			pass
-
 	def do(self, request, payload={}):
 		try:
 			key=self.uuid()
@@ -170,14 +164,23 @@ class CPWebservice(object):
 			payload['agent']=CLOUDPRINT_AGENT
 			payload['session']=key
 			url=self.url()
-			self.logger.debug('webservice:request%s]' % str(payload))
+			self.logger.debug('webservice:request[%s]' % str(payload))
 			r=requests.get(url, params=payload, timeout=10)
 			if r.status_code==200:
-				return self.processResponse(r.text, key)
+				data=self.uncrypt(r.text, key)
+				if data:
+					ctype=r.headers['content-type']
+					self.logger.debug('webservice:response[%s:%s]' % (ctype, data))
+					try:
+						if 'json' in ctype:
+							return json.loads(data)
+						elif 'xml' in ctype:
+							return minidom.parseString(data).documentElement
+					except:
+						self.logger.warning('webservice:unable to process %s response!' % ctype)
+						pass
 		except:
 			pass
-
-		self.logger.error('webservice:request error!')
 
 	def handle(self, handler, payload={}):
 		try:
@@ -193,6 +196,74 @@ class CPWebservice(object):
 
 	def buttonHold(self):
 		return self.handle('buttonhold')
+
+
+
+class CPWebserviceFlag(object):
+	def __init__(self, webservice, handler, delay, delayRepeat=0, initialValue=False):
+		self._webservice=webservice
+		self._handler=handler
+		self._delay=delay
+		self._delayRepeat=delayRepeat
+		self._input=bool(initialValue)
+		self._output=self._input
+		self._stamp=0
+		self._trigger=False
+		self._stampTrigger=0
+		self._timer=0
+
+	@property
+	def webservice(self):
+		return self._webservice
+
+	def observe(self, value):
+		value=bool(value)
+		if value!=self._input:
+			self._stamp=time.time()
+			self._input=value
+			self._trigger=False
+		self.manager()
+
+	def trigger(self, repeat=False):
+		try:
+			repeat=int(repeat)
+			payload={'value':self._output, 'repeat':repeat}
+			job=self._webservice.handle(self._handler, payload)
+			if job:
+				self.webservice.parent.submitXmlJob(job)
+			self._trigger=True
+			self._stampTrigger=time.time()			
+		except:
+			pass
+
+	def manager(self):
+		if self._input!=self._output:
+			if not self._trigger:
+				if time.time()-self._stamp>=self._delay:
+					self._output=self._input
+					self.webservice.logger.warning('info:%s:%d' % (self._handler, self._output))
+					self.trigger()
+		else:
+			if self._output and self._delayRepeat>0:
+				if time.time()-self._stampTrigger>=self._delayRepeat:
+					self.trigger(True)
+
+	@property
+	def output(self):
+		return bool(self._output)
+
+	# allow things like "if flag:"
+	def __nonzero__(self):
+		return self.output
+
+	@property
+	def input(self):
+		return bool(self._input)
+
+	def isTimeout(self, timeout):
+		if time.time()-self._timer>=timeout:
+			self._timer=time.time()
+			return True
 
 
 
@@ -334,18 +405,14 @@ class CPPrinterState(object):
 
 
 class CPPrinter(object):
-	def __init__(self, parent):
-		self._parent=parent
+	def __init__(self, logger):
+		self._logger=logger
 		self._states=CPPrinterState()
 		self._printer=None
 
 	@property
 	def logger(self):
-		return self.parent.logger
-
-	@property
-	def parent(self):
-		return self._parent
+		return self._logger
 
 	@property
 	def printer(self):
@@ -535,20 +602,143 @@ class CPPrinter(object):
 				self.close()
 
 
+
+class CPJobs(CPThread):
+	def onInit(self):
+		self._jobs=Queue()
+		self._printer=CPPrinter(self.logger)
+		self._flagOutOfPaper=self.parent.webservice.flag('outofpaper', 5, 3600*24)
+
+	@property
+	def printer(self):
+	    return self._printer
+
+	def submitXmlJob(self, job):
+		try:
+			self.logger.debug('jobs:sumbit')
+			self._jobs.put(job)
+		except:
+			pass
+
+	def pop(self):
+		try:
+			return self._jobs.get(False)
+		except:
+			pass
+
+	def isQueueEmpty(self):
+		return self._jobs.empty()
+
+	def isPrinterReady(self):
+		return self.isQueueEmpty() and not self._flagOutOfPaper
+
+	def reboot(self):
+		subprocess.call("sync")
+		subprocess.call(["reboot"])
+
+	def parseCommand(self, node):
+		while node:
+			try:
+				if node.nodeType==minidom.Node.ELEMENT_NODE:
+					name=node.nodeName.lower()
+					self.logger.debug('command:%s' % name)
+					if name=='reboot':
+						self.reboot()
+					elif name=='restart':
+						self.parent.stop()
+				node=node.nextSibling
+			except:
+				self.logger.error('command:exception occured!')
+				break
+
+	def parseTicket(self, node):
+		while node:
+			try:
+				if node.nodeType==minidom.Node.TEXT_NODE:
+					data=node.data.strip()
+					if data:
+						self.printer.write(data)
+				elif node.nodeType==minidom.Node.ELEMENT_NODE:
+					name=node.nodeName.lower()
+					child=node.firstChild
+					if name=='br':
+						self.printer.write('\n', False)
+					elif name=='bold':
+						self.printer.bold()
+						self.parseTicket(child)
+						self.printer.restoreBold()
+					elif name=='underline':
+						self.printer.underline()
+						self.parseTicket(child)
+						self.printer.restoreUnderline()
+					elif name=='inverse':
+						self.printer.inverse()
+						self.parseTicket(child)
+						self.printer.restoreInverse()
+					elif name=='feed':
+						self.printer.feed()
+					elif name in ['small', 'medium', 'large']:
+						self.printer.size(name)
+						self.parseTicket(child)
+						self.printer.restoreSize()
+					elif name in ['left', 'center', 'right']:
+						self.printer.align(name)
+						self.parseTicket(child)
+						self.printer.restoreAlign()
+					else:
+						self.logger.warning('ticket:ignoring unsupported tag [%s]' % name)
+						self.parseTicket(child)
+				node=node.nextSibling
+			except:
+				self.logger.error('ticket:exception occured!')
+				break
+
+	def parseMessage(self, root):
+		try:
+			self.logger.debug('jobs:parsing xml message...')
+			for item in root.childNodes:
+				name=item.nodeName.lower()
+				if name=='ticket':
+					self.printer.reset()
+					self.parseTicket(item.firstChild)
+					self.printer.feed(3)
+				elif name=='command':
+					self.parseCommand(item.firstChild)
+		except:
+			self.logger.error('jobs:unable to parse xml')
+		return True
+
+	def onStart(self):
+		pass
+
+	def onRun(self):
+		if self._flagOutOfPaper.isTimeout(2):
+			self._flagOutOfPaper.observe(not self.printer.hasPaper())
+
+		if not self._flagOutOfPaper.input:
+			data=self.pop()
+			if data:
+				self.parseMessage(data)
+
+	def onStop(self):
+		pass
+
+	def onRelease(self):
+		pass
+
+
+
 class CPMailBox(CPThread):
-	def setImapServer(self, server, user, password):
+	def setImapServer(self, server, user, password, fetchDelay=15):
 		self._server=server
 		self._user=user
 		self._password=password
 		self._imap=None
 		self._mdata=None
 		self._mid=None
-		self._printer=CPPrinter(self)
 		self._messages=[]
-
-	@property
-	def printer(self):
-		return self._printer
+		self._fetchDelay=fetchDelay
+		self._fetchTimeout=0
 
 	def disconnect(self):
 		if self._imap:
@@ -633,194 +823,41 @@ class CPMailBox(CPThread):
 	def onStart(self):
 		pass
 
-	def reboot(self):
-		subprocess.call("sync")
-		subprocess.call(["reboot"])
-
-	def parseCommand(self, node):
-		while node:
-			try:
-				if node.nodeType==minidom.Node.ELEMENT_NODE:
-					name=node.nodeName.lower()
-					self.logger.debug('command:%s' % name)
-					if name=='reboot':
-						self.reboot()
-					elif name=='restart':
-						self.parent.stop()
-				node=node.nextSibling
-			except:
-				self.logger.error('command:exception occured!')
-				break
-
-	def parseTicket(self, node):
-		while node:
-			try:
-				if node.nodeType==minidom.Node.TEXT_NODE:
-					data=node.data.strip()
-					if data:
-						self.printer.write(data)
-				elif node.nodeType==minidom.Node.ELEMENT_NODE:
-					name=node.nodeName.lower()
-					child=node.firstChild
-					if name=='br':
-						self.printer.write('\n', False)
-					elif name=='bold':
-						self.printer.bold()
-						self.parseTicket(child)
-						self.printer.restoreBold()
-					elif name=='underline':
-						self.printer.underline()
-						self.parseTicket(child)
-						self.printer.restoreUnderline()
-					elif name=='inverse':
-						self.printer.inverse()
-						self.parseTicket(child)
-						self.printer.restoreInverse()
-					elif name=='feed':
-						self.printer.feed()
-					elif name in ['small', 'medium', 'large']:
-						self.printer.size(name)
-						self.parseTicket(child)
-						self.printer.restoreSize()
-					elif name in ['left', 'center', 'right']:
-						self.printer.align(name)
-						self.parseTicket(child)
-						self.printer.restoreAlign()
-					else:
-						self.logger.warning('ticket:ignoring unsupported tag [%s]' % name)
-						self.parseTicket(child)
-				node=node.nextSibling
-			except:
-				self.logger.error('ticket:exception occured!')
-				break
-
-	def parseMessage(self, data):
-		try:
-			doc = minidom.parseString(data)
-			root = doc.documentElement
-			for item in root.childNodes:
-				name=item.nodeName.lower()
-				if name=='ticket':
-					self.printer.reset()
-					self.parseTicket(item.firstChild)
-					self.printer.feed(3)
-				elif name=='command':
-					self.parseCommand(item.firstChild)
-		except:
-			self.logger.error('mailbox:unable to parse xml')
-		return True
-
-	def queueMessage(self, message):
-		self._messages.append(message)
-
-	def processMessageQueue(self):
-		try:
-			if self._messages:
-				message=self._messages[0]
-				self.parseMessage(message)
-				del self._messages[0]
-				return True
-		except:
-			pass
-
 	def onRun(self):
-		while not self.isStopRequest():
-			if self.parent.flagOutOfpaper.isTimeout(2):
-				self.parent.flagOutOfpaper.observe(not self.printer.hasPaper())
-
-			if not self.parent.flagOutOfpaper.input:
-				if self.processMessageQueue():
-					continue
+		if not self.parent.isPrinterReady():
+			self.sleep(1)
+		else:
+			if time.time()>=self._fetchTimeout:
 				msg=self.fetchMessage()
 				if not msg:
-					self.sleep(15)
-					break
-				try:
-					m=email.message_from_string(msg)
-					if m:
-						self.logger.debug('mailbox:processing message %s' % m['Message-ID'])
-						for part in m.walk():
-							self.logger.debug('mailbox:found message part [%s]' % part.get_content_type())
-							# each part is a either non-multipart, or another multipart message
-							# that contains further parts... Message is organized like a tree
-							if part.get_content_type()=='text/plain':
-								#print part.get_payload()
-								self.queueMessage(part.get_payload().strip())
-				except:
-					self.logger.error('mailbox:error while decoding RFC822 message!')
-				finally:
-					self.deleteMessage()
+					self._fetchTimeout=time.time()+15
+				else:
+					try:
+						m=email.message_from_string(msg)
+						if m:
+							self.logger.debug('mailbox:processing message %s' % m['Message-ID'])
+							for part in m.walk():
+								self.logger.debug('mailbox:found message part [%s]' % part.get_content_type())
+								# each part is a either non-multipart, or another multipart message
+								# that contains further parts... Message is organized like a tree
+								if part.get_content_type()=='text/plain':
+									#print part.get_payload()
+									try:
+										job=minidom.parseString(part.get_payload().strip()).documentElement
+										self.parent.submitXmlJob(job)
+									except:
+										pass
+					except:
+						self.logger.error('mailbox:error while decoding RFC822 message!')
+					finally:
+						self.deleteMessage()
+
 
 	def onStop(self):
 		self.disconnect()
 
 	def onRelease(self):
 		pass
-
-
-class CPWebserviceFlag(object):
-	def __init__(self, webservice, handler, delay, delayRepeat=0, initialValue=False):
-		self._webservice=webservice
-		self._handler=handler
-		self._delay=delay
-		self._delayRepeat=delayRepeat
-		self._input=bool(initialValue)
-		self._output=self._input
-		self._stamp=0
-		self._trigger=False
-		self._stampTrigger=0
-		self._timer=0
-
-	@property
-	def webservice(self):
-		return self._webservice
-
-	def observe(self, value):
-		value=bool(value)
-		if value!=self._input:
-			self._stamp=time.time()
-			self._input=value
-			self._trigger=False
-		self.manager()
-
-	def trigger(self, repeat=False):
-		try:
-			repeat=int(repeat)
-			payload={'value':self._output, 'repeat':repeat}
-			self._webservice.handle(self._handler, payload)
-			self._trigger=True
-			self._stampTrigger=time.time()
-		except:
-			pass
-
-	def manager(self):
-		if self._input!=self._output:
-			if not self._trigger:
-				if time.time()-self._stamp>=self._delay:
-					self._output=self._input
-					self.webservice.logger.warning('info:%s:%d' % (self._handler, self._output))
-					self.trigger()
-		else:
-			if self._output and self._delayRepeat>0:
-				if time.time()-self._stampTrigger>=self._delayRepeat:
-					self.trigger(True)
-
-	@property
-	def output(self):
-		return bool(self._output)
-
-	# allow things like "if flag:"
-	def __nonzero__(self):
-		return self.output
-
-	@property
-	def input(self):
-		return bool(self._input)
-
-	def isTimeout(self, timeout):
-		if time.time()-self._timer>=timeout:
-			self._timer=time.time()
-			return True
 
 
 class CloudPrint(object):
@@ -832,9 +869,10 @@ class CloudPrint(object):
 		logger.addHandler(socketHandler)
 		self._logger=logger
 
+		self._eventStop=Event()
+
 		self._webservice=CPWebservice(self, self.logger)
-		self.flagOutOfpaper=CPWebserviceFlag(self.webservice, 'outofpaper', 5, 3600*24)
-		self.flagWatchdog=CPWebserviceFlag(self.webservice, 'watchdog', 60, 900)
+		self._flagWatchdog=CPWebserviceFlag(self.webservice, 'watchdog', 60, 900)
 
 		self._persistentData=CPPersistentData('cloudprint.pdata')
 		factorySettings=self._webservice.getFactorySettings()
@@ -842,10 +880,9 @@ class CloudPrint(object):
 			self._persistentData.importData(factorySettings)
 			self._persistentData.save()
 
-		self._eventStop=Event()
-
 		self.gpioInit()
 
+		self._jobs=CPJobs(self)
 		self._mailbox=CPMailBox(self)
 		self._mailbox.setImapServer(self.persistentData['imap'], 
 			self.persistentData['user'], 
@@ -858,6 +895,10 @@ class CloudPrint(object):
 	@property
 	def webservice(self):
 		return self._webservice
+
+	@property
+	def jobs(self):
+		return self._jobs
 
 	@property
 	def mailbox(self):
@@ -898,8 +939,19 @@ class CloudPrint(object):
 		except:
 			pass
 
+	def submitXmlJob(self, job):
+		try:
+			self._jobs.submitXmlJob(job)
+		except:
+			pass
+
+	def isPrinterReady(self):
+		return self._jobs.isPrinterReady()
+
 	def start(self):
 		self.logger.info('starting service...')
+		self._jobs.start()
+		self._jobs.waitUntilStarted()
 		self._mailbox.start()
 		self._mailbox.waitUntilStarted()
 
@@ -916,6 +968,7 @@ class CloudPrint(object):
 			self.stop()
 		finally:
 			self.logger.info("waiting for service threads termination...")
+			self._jobs.join()
 			self._mailbox.join()
 			self.logger.info("service threads halted.")
 			self.logger.info("service halted.")
@@ -947,7 +1000,7 @@ class CloudPrint(object):
 
 	def manager(self):
 		self.buttonManager()
-		self.flagWatchdog.observe(1)
+		self._flagWatchdog.observe(1)
 		self.sleep(0.01)
 
 	def sleep(self, delay):
@@ -958,9 +1011,11 @@ class CloudPrint(object):
 			self._eventStop.set()
 
 		self.logger.info('halting service threads...')
+		self._jobs.stop()
 		self._mailbox.stop()
 
 		self.logger.info('releasing service threads...')
+		self._jobs.release()
 		self._mailbox.release()
 
 
