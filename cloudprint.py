@@ -22,12 +22,14 @@ import subprocess
 
 from Adafruit_Thermal import *
 
+# http://sourceforge.net/p/raspberry-gpio-python/wiki/Home/
 import RPi.GPIO as GPIO
+
 import requests
 from Crypto.Cipher import Blowfish
 import imaplib2
 
-CLOUDPRINT_AGENT='python-cloudprint-rapi0-v0.1.0'
+CLOUDPRINT_AGENT='python-rapi0-v0.1.1'
 
 # printer manual http://www.adafruit.com/datasheets/A2-user%20manual.pdf
 
@@ -120,8 +122,15 @@ class CPWebservice(object):
 		return self._parent
 
 	@property
+	def jobs(self):
+	    return self.parent.jobs
+
+	@property
 	def logger(self):
 		return self._logger
+
+	def updateIpAddress(self):
+		self._ipaddress=self.getInterfaceIpAddress('eth0')
 
 	def flag(self, handler, delay, delayRepeat=0, initialValue=False):
 		return CPWebserviceFlag(self, handler, delay, delayRepeat=0, initialValue=False)
@@ -151,7 +160,7 @@ class CPWebservice(object):
 	def uncrypt(self, data, key):
 		try:
 			bf=Blowfish.BlowfishCipher(key)
-			return bf.decrypt(base64.b64decode(data))
+			return bf.decrypt(base64.b64decode(data)).rstrip('\0')
 		except:
 			pass
 
@@ -167,18 +176,22 @@ class CPWebservice(object):
 			self.logger.debug('webservice:request[%s]' % str(payload))
 			r=requests.get(url, params=payload, timeout=10)
 			if r.status_code==200:
-				data=self.uncrypt(r.text, key)
+				data=self.uncrypt(r.text, key).strip()
 				if data:
+					data=data.strip()
 					ctype=r.headers['content-type']
 					self.logger.debug('webservice:response[%s:%s]' % (ctype, data))
 					try:
 						if 'json' in ctype:
 							return json.loads(data)
 						elif 'xml' in ctype:
+							# try to retrieve root node
+							#print "XML(%s)" % data
+							#print "HEX(%s)" % ":".join("{:02x}".format(ord(c)) for c in data)
 							return minidom.parseString(data).documentElement
 					except:
+						#traceback.print_exc()
 						self.logger.warning('webservice:unable to process %s response!' % ctype)
-						pass
 		except:
 			pass
 
@@ -188,15 +201,26 @@ class CPWebservice(object):
 		except:
 			pass
 
+	def handleAndProcessJobResponse(self, handler, payload={}):
+		job=self.handle(handler, payload)
+		if job:
+			self.parent.submitXmlJob(job)
+			return True
+
 	def getFactorySettings(self):
 		return self.handle('getfactorysettings')
 
 	def buttonTap(self):
-		return self.handle('buttontap')
+		self.updateIpAddress()
+		if not self.handleAndProcessJobResponse('buttontap'):
+			try:
+				job="<root><ticket><center>MAC:%s<feed/>IP:%s<feed/></center></ticket></root>" % (self._macaddress, self._ipaddress)
+				self.parent.submitXmlJobFromString(job)
+			except:
+				pass
 
 	def buttonHold(self):
-		return self.handle('buttonhold')
-
+		return self.handleAndProcessJobResponse('buttonhold')
 
 
 class CPWebserviceFlag(object):
@@ -264,7 +288,6 @@ class CPWebserviceFlag(object):
 		if time.time()-self._timer>=timeout:
 			self._timer=time.time()
 			return True
-
 
 
 class CPThread(Thread):
@@ -566,13 +589,10 @@ class CPPrinter(object):
 				self._states.align.push(mode)
 			if mode=='right':
 				self.printer.justify('R')
-				self.logger.warning('right')
 			elif mode=='center':
 				self.printer.justify('C')
-				self.logger.warning('center')
 			else:
 				self.printer.justify('L')
-				self.logger.warning('left')
 		except:
 			self.logger.error('printer:align() error')
 			self.close()
@@ -607,7 +627,7 @@ class CPJobs(CPThread):
 	def onInit(self):
 		self._jobs=Queue()
 		self._printer=CPPrinter(self.logger)
-		self._flagOutOfPaper=self.parent.webservice.flag('outofpaper', 5, 3600*24)
+		self._flagOutOfPaper=self.parent.webservice.flag('outofpaper', 2, 3600*24)
 
 	@property
 	def printer(self):
@@ -615,8 +635,18 @@ class CPJobs(CPThread):
 
 	def submitXmlJob(self, job):
 		try:
-			self.logger.debug('jobs:sumbit')
-			self._jobs.put(job)
+			if job:
+				self.logger.debug('jobs:sumbit')
+				self._jobs.put(job)
+				return True
+		except:
+			pass
+
+	def submitXmlJobFromString(self, strjob):
+		try:
+			job=minidom.parseString(strjob).documentElement
+			if job:
+				return self.submitXmlJob(job)
 		except:
 			pass
 
@@ -727,7 +757,6 @@ class CPJobs(CPThread):
 		pass
 
 
-
 class CPMailBox(CPThread):
 	def setImapServer(self, server, user, password, fetchDelay=15):
 		self._server=server
@@ -819,7 +848,6 @@ class CPMailBox(CPThread):
 					self.logger.error('imap:error occured while deleting message %s!' % self._mid)
 					self.disconnect()
 
-
 	def onStart(self):
 		pass
 
@@ -841,8 +869,8 @@ class CPMailBox(CPThread):
 								# each part is a either non-multipart, or another multipart message
 								# that contains further parts... Message is organized like a tree
 								if part.get_content_type()=='text/plain':
-									#print part.get_payload()
 									try:
+										#print part.get_payload()
 										job=minidom.parseString(part.get_payload().strip()).documentElement
 										self.parent.submitXmlJob(job)
 									except:
@@ -852,12 +880,11 @@ class CPMailBox(CPThread):
 					finally:
 						self.deleteMessage()
 
-
 	def onStop(self):
-		self.disconnect()
+		pass
 
 	def onRelease(self):
-		pass
+		self.disconnect()
 
 
 class CloudPrint(object):
@@ -924,6 +951,9 @@ class CloudPrint(object):
 		except:
 			pass
 
+	def gpioRelease(self):
+		GPIO.cleanup()
+
 	def led(self, state):
 		try:
 			if state:
@@ -942,6 +972,12 @@ class CloudPrint(object):
 	def submitXmlJob(self, job):
 		try:
 			self._jobs.submitXmlJob(job)
+		except:
+			pass
+
+	def submitXmlJobFromString(self, job):
+		try:
+			self._jobs.submitXmlJobFromString(job)
 		except:
 			pass
 
@@ -971,6 +1007,13 @@ class CloudPrint(object):
 			self._jobs.join()
 			self._mailbox.join()
 			self.logger.info("service threads halted.")
+
+			self.logger.info('releasing service threads...')
+			self._jobs.release()
+			self._mailbox.release()
+
+			self.gpioRelease()
+
 			self.logger.info("service halted.")
 
 	def buttonManager(self):
@@ -1013,10 +1056,6 @@ class CloudPrint(object):
 		self.logger.info('halting service threads...')
 		self._jobs.stop()
 		self._mailbox.stop()
-
-		self.logger.info('releasing service threads...')
-		self._jobs.release()
-		self._mailbox.release()
 
 
 cp=CloudPrint('192.168.0.84')
