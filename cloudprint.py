@@ -1021,7 +1021,7 @@ class CloudPrint(object):
 		self._permanentBuzzer=bool(state)
 		self.buzzer(state)
 
-	def beep(self, n=1, delay=0.1):
+	def beep(self, n=1, delay=0.07):
 		for b in range(n):
 			self.buzzer(1)
 			self.sleep(delay)
