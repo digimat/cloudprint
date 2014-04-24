@@ -34,14 +34,19 @@ CLOUDPRINT_AGENT='python-rapi0-v0.1.1'
 # printer manual http://www.adafruit.com/datasheets/A2-user%20manual.pdf
 
 class CPPersistentData(object):
-	def __init__(self, fname, defaults={}):
+	def __init__(self, fpath, fname, defaults={}):
+		if not fpath:
+			os.path.dirname(os.path.realpath(__file__))
+		self._fpath=fpath
 		self._fname=fname
 		self._data={}
 		self._updated=False
 		self.load(defaults)
 
 	def fpath(self):
-		return os.path.join(os.path.dirname(os.path.realpath(__file__)), self._fname)
+		if not os.path.exists(self._fpath):
+ 			os.makedirs(self._fpath)
+		return os.path.join(self._fpath, self._fname)
 
 	def data(self):
 		return self._data
@@ -113,6 +118,7 @@ class CPWebservice(object):
 	def __init__(self, parent, logger):
 		self._parent=parent
 		self._logger=logger
+		self._stampStart=time.time()
 		self._macaddress=self.getMacAddress()
 		self._ipaddress=self.getInterfaceIpAddress('eth0')
 		self.logger.debug('webservice:mac=%s, ip=%s' % (self._macaddress, self._ipaddress))
@@ -154,6 +160,9 @@ class CPWebservice(object):
 	def lid(self):
 		return md5.md5(self.getMacAddress()).hexdigest()
 
+	def runtime(self):
+		return time.time()-self._stampStart
+
 	def uuid(self):
 		return str(uuid.uuid4()).lower()
 
@@ -172,6 +181,7 @@ class CPWebservice(object):
 			payload['lip']=self._ipaddress
 			payload['agent']=CLOUDPRINT_AGENT
 			payload['session']=key
+			payload['runtime']=self.runtime()
 			url=self.url()
 			self.logger.debug('webservice:request[%s]' % str(payload))
 			r=requests.get(url, params=payload, timeout=10)
@@ -247,6 +257,7 @@ class CPWebserviceFlag(object):
 			self._input=value
 			self._trigger=False
 		self.manager()
+		return self._input
 
 	def trigger(self, repeat=False):
 		try:
@@ -687,12 +698,15 @@ class CPJobs(CPThread):
 				if node.nodeType==minidom.Node.TEXT_NODE:
 					data=node.data.strip()
 					if data:
+						data=data.replace('$', ' ')
 						self.printer.write(data)
 				elif node.nodeType==minidom.Node.ELEMENT_NODE:
 					name=node.nodeName.lower()
 					child=node.firstChild
 					if name=='br':
 						self.printer.write('\n', False)
+					elif name=='space':
+						self.printer.write(' ', False)
 					elif name=='bold':
 						self.printer.bold()
 						self.parseTicket(child)
@@ -729,6 +743,28 @@ class CPJobs(CPThread):
 			for item in root.childNodes:
 				name=item.nodeName.lower()
 				if name=='ticket':
+					alarm=False
+					critical=False
+					ack=False
+					try:
+						alarm=bool(item.attributes['alarm'])
+					except:
+						pass
+					try:
+						critical=bool(item.attributes['critical'])
+					except:
+						pass
+					try:
+						ack=bool(item.attributes['ack'])
+					except:
+						pass
+					if alarm:
+						self.parent.beep(3)
+						if critical:
+							self.parent.permanentBuzzer(1)
+					if ack:
+						self.parent.permanentBuzzer(0)
+						
 					self.printer.reset()
 					self.parseTicket(item.firstChild)
 					self.printer.feed(3)
@@ -743,7 +779,8 @@ class CPJobs(CPThread):
 
 	def onRun(self):
 		if self._flagOutOfPaper.isTimeout(2):
-			self._flagOutOfPaper.observe(not self.printer.hasPaper())
+			if self._flagOutOfPaper.observe(not self.printer.hasPaper()):
+				self.parent.beep()
 
 		if not self._flagOutOfPaper.input:
 			data=self.pop()
@@ -901,7 +938,7 @@ class CloudPrint(object):
 		self._webservice=CPWebservice(self, self.logger)
 		self._flagWatchdog=CPWebserviceFlag(self.webservice, 'watchdog', 60, 900)
 
-		self._persistentData=CPPersistentData('cloudprint.pdata')
+		self._persistentData=CPPersistentData('/etc/cloudprint', 'cloudprint.pdata')
 		factorySettings=self._webservice.getFactorySettings()
 		if factorySettings:
 			self._persistentData.importData(factorySettings)
@@ -943,11 +980,16 @@ class CloudPrint(object):
 			self._buttonTapEnable=False
 			self._gpioLedPin=18
 			self._gpioButtonPin=23
+			self._gpioBuzzerPin=22
+			self._permanentBuzzer=False
 			GPIO.setmode(GPIO.BCM)
 			GPIO.setwarnings(False)
 			GPIO.setup(self._gpioLedPin, GPIO.OUT)
+			GPIO.setup(self._gpioBuzzerPin, GPIO.OUT)
 			GPIO.setup(self._gpioButtonPin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
 			self.led(0)
+			self.buzzer(0)
 		except:
 			pass
 
@@ -962,6 +1004,29 @@ class CloudPrint(object):
 				GPIO.output(self._gpioLedPin, GPIO.LOW)
 		except:
 			self.logger.warning('led: unable to access gpio LED')
+
+	def buzzer(self, state):
+		try:
+			if self._permanentBuzzer:
+				state=1
+
+			if state:
+				GPIO.output(self._gpioBuzzerPin, GPIO.HIGH)
+			else:
+				GPIO.output(self._gpioBuzzerPin, GPIO.LOW)
+		except:
+			self.logger.warning('led: unable to access gpio BUZZER')
+
+	def permanentBuzzer(self, state):
+		self._permanentBuzzer=bool(state)
+		self.buzzer(state)
+
+	def beep(self, n=1, delay=0.1):
+		for b in range(n):
+			self.buzzer(1)
+			self.sleep(delay)
+			self.buzzer(0)
+			self.sleep(delay)
 
 	def button(self):
 		try:
@@ -1034,6 +1099,7 @@ class CloudPrint(object):
 				if buttonState:
 					if self._buttonTapEnable:
 						self.logger.debug('button:onTap()')
+						self.permanentBuzzer(0)
 						self.webservice.buttonTap();
 						self._buttonTapEnable=False
 						self._buttonHoldEnable=False
