@@ -1125,6 +1125,7 @@ class CloudPrint(object):
 					if self._buttonTapEnable:
 						self.logger.debug('button:onTap()')
 						self.permanentBuzzer(0)
+						self.beep()
 						self.webservice.buttonTap();
 						self._buttonTapEnable=False
 						self._buttonHoldEnable=False
