@@ -983,7 +983,7 @@ class CloudPrint(object):
 			self._gpioButtonPin=23
 			self._gpioBuzzerPin=22
 			self._permanentBuzzer=False
-			self._stampPermanentBuzzer=0
+			self._stampBuzzer=0
 			self._stateBuzzer=0
 			GPIO.setmode(GPIO.BCM)
 			GPIO.setwarnings(False)
@@ -1010,11 +1010,15 @@ class CloudPrint(object):
 
 	def buzzer(self, state):
 		try:
+			state=bool(state)
 			if state:
 				GPIO.output(self._gpioBuzzerPin, GPIO.HIGH)
 			else:
 				GPIO.output(self._gpioBuzzerPin, GPIO.LOW)
-			self._stateBuzzer=state
+
+			if state != self._stateBuzzer:
+				self._stateBuzzer=state
+				self._stampBuzzer=time.time()
 		except:
 			self.logger.warning('led: unable to access gpio BUZZER')
 
@@ -1113,10 +1117,10 @@ class CloudPrint(object):
 		self.buttonManager()
 		self._flagWatchdog.observe(1)
 		if self._permanentBuzzer:
-			t=time.time()-self._stampPermanentBuzzer
-			if self._stateBuzzer and t>=0.1:
+			t=time.time()-self._stampBuzzer
+			if self._stateBuzzer and t>=0.3:
 				self.buzzer(0)
-			elif not self._stateBuzzer and t>=0.5:
+			elif not self._stateBuzzer and t>=1.0:
 				self.buzzer(1)
 		self.sleep(0.01)
 
