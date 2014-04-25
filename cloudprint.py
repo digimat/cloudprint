@@ -807,6 +807,7 @@ class CPMailBox(CPThread):
 		self._messages=[]
 		self._fetchDelay=fetchDelay
 		self._fetchTimeout=0
+		self._prune=False
 
 	def disconnect(self):
 		if self._imap:
@@ -818,6 +819,10 @@ class CPMailBox(CPThread):
 			except:
 				pass
 		self._imap=None
+
+	def prune(self):
+		self.logger.warning('mailbox:pruning requested!')
+		self._prune=True
 
 	def noop(self):
 		try:
@@ -891,6 +896,18 @@ class CPMailBox(CPThread):
 		pass
 
 	def onRun(self):
+		if self._prune:
+			self._prune=False
+			self.logger.info('mailbox:pruning...')
+			self.parent.beep(5)
+			while not self.isStopRequest():
+				msg=self.fetchMessage()
+				if not msg:
+					break
+				self.deleteMessage()
+				self.logger.warning('mailbox:prunning message!')
+			self.logger.info('mailbox:prunning done.')
+
 		if not self.parent.isPrinterReady():
 			self.sleep(1)
 		else:
@@ -1099,8 +1116,8 @@ class CloudPrint(object):
 			if (t-self._lastButtonTime) >= 2.0:
 				if self._buttonHoldEnable:
 					self.logger.debug('button:onHold()')
-					self.beep(1)
 					self.webservice.buttonHold();
+					self._mailbox.prune()
 					self._buttonHoldEnable=False
 					self._buttonTapEnable=False
 			elif (t-self._lastButtonTime)>=0.1:
@@ -1124,7 +1141,7 @@ class CloudPrint(object):
 				self.buzzer(0)
 			elif not self._stateBuzzer and t>=1.0:
 				self.buzzer(1)
-		self.sleep(0.05)
+		self.sleep(0.01)
 
 	def sleep(self, delay):
 		self._eventStop.wait(delay)
