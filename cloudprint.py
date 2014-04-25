@@ -1112,8 +1112,12 @@ class CloudPrint(object):
 	def manager(self):
 		self.buttonManager()
 		self._flagWatchdog.observe(1)
-		if self._permanentBuzzer and time.time()-self._stampPermanentBuzzer>=0.1:
-			self.buzzer(not self._stateBuzzer)
+		if self._permanentBuzzer:
+			t=time.time()-self._stampPermanentBuzzer
+			if self._stateBuzzer and t>=0.1:
+				self.buzzer(0)
+			elif not self._stateBuzzer and t>=0.5:
+				self.buzzer(1)
 		self.sleep(0.01)
 
 	def sleep(self, delay):
@@ -1126,7 +1130,6 @@ class CloudPrint(object):
 		self.logger.info('halting service threads...')
 		self._jobs.stop()
 		self._mailbox.stop()
-
 
 cp=CloudPrint('192.168.0.84')
 cp.start()
