@@ -29,7 +29,7 @@ import requests
 from Crypto.Cipher import Blowfish
 import imaplib2
 
-CLOUDPRINT_AGENT='python-rapi0-v0.1.1'
+CLOUDPRINT_AGENT='python-rapi0-v0.1.2'
 
 # printer manual http://www.adafruit.com/datasheets/A2-user%20manual.pdf
 # http://www.proto-pic.co.uk/content/datasheets/thermalPrinter-CommandSet.pdf
@@ -182,7 +182,7 @@ class CPWebservice(object):
 			payload['lip']=self._ipaddress
 			payload['agent']=CLOUDPRINT_AGENT
 			payload['session']=key
-			payload['runtime']=self.runtime()
+			payload['uptime']=self.runtime()
 			url=self.url()
 			self.logger.debug('webservice:request[%s]' % str(payload))
 			r=requests.get(url, params=payload, timeout=10)
@@ -787,6 +787,7 @@ class CPJobs(CPThread):
 			data=self.pop()
 			if data:
 				self.parseMessage(data)
+		self.sleep(0.5)
 
 	def onStop(self):
 		pass
@@ -917,6 +918,7 @@ class CPMailBox(CPThread):
 						self.logger.error('mailbox:error while decoding RFC822 message!')
 					finally:
 						self.deleteMessage()
+		self.sleep(0.5)
 
 	def onStop(self):
 		pass
@@ -1122,7 +1124,7 @@ class CloudPrint(object):
 				self.buzzer(0)
 			elif not self._stateBuzzer and t>=1.0:
 				self.buzzer(1)
-		self.sleep(0.01)
+		self.sleep(0.05)
 
 	def sleep(self, delay):
 		self._eventStop.wait(delay)
