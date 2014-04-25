@@ -32,6 +32,7 @@ import imaplib2
 CLOUDPRINT_AGENT='python-rapi0-v0.1.1'
 
 # printer manual http://www.adafruit.com/datasheets/A2-user%20manual.pdf
+# http://www.proto-pic.co.uk/content/datasheets/thermalPrinter-CommandSet.pdf
 
 class CPPersistentData(object):
 	def __init__(self, fpath, fname, defaults={}):
@@ -982,6 +983,8 @@ class CloudPrint(object):
 			self._gpioButtonPin=23
 			self._gpioBuzzerPin=22
 			self._permanentBuzzer=False
+			self._stampPermanentBuzzer=0
+			self._stateBuzzer=0
 			GPIO.setmode(GPIO.BCM)
 			GPIO.setwarnings(False)
 			GPIO.setup(self._gpioLedPin, GPIO.OUT)
@@ -1007,13 +1010,11 @@ class CloudPrint(object):
 
 	def buzzer(self, state):
 		try:
-			if self._permanentBuzzer:
-				state=1
-
 			if state:
 				GPIO.output(self._gpioBuzzerPin, GPIO.HIGH)
 			else:
 				GPIO.output(self._gpioBuzzerPin, GPIO.LOW)
+			self._stateBuzzer=state
 		except:
 			self.logger.warning('led: unable to access gpio BUZZER')
 
@@ -1092,6 +1093,7 @@ class CloudPrint(object):
 			if (t-self._lastButtonTime) >= 2.0:
 				if self._buttonHoldEnable:
 					self.logger.debug('button:onHold()')
+					self.beep(1)
 					self.webservice.buttonHold();
 					self._buttonHoldEnable=False
 					self._buttonTapEnable=False
@@ -1110,6 +1112,8 @@ class CloudPrint(object):
 	def manager(self):
 		self.buttonManager()
 		self._flagWatchdog.observe(1)
+		if self._permanentBuzzer and time.time()-self._stampPermanentBuzzer>=0.1:
+			self.buzzer(not self._stateBuzzer)
 		self.sleep(0.01)
 
 	def sleep(self, delay):
