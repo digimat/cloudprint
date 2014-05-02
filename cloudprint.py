@@ -695,8 +695,7 @@ class CPJobs(CPThread):
 					elif name=='restart':
 						self.parent.stop()
 					elif name=='ping':
-						self.jobs....
-						self.parent.stop()
+						self.parent.webservice.pong()
 				node=node.nextSibling
 			except:
 				self.logger.error('command:exception occured!')
