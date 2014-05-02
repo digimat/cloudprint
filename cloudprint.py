@@ -29,7 +29,8 @@ import requests
 from Crypto.Cipher import Blowfish
 import imaplib2
 
-CLOUDPRINT_AGENT='python-rapi0-v0.1.2'
+CLOUDPRINT_AGENT='python-rapi0'
+CLOUDPRINT_VERSION='0.1.3'
 
 # printer manual http://www.adafruit.com/datasheets/A2-user%20manual.pdf
 # http://www.proto-pic.co.uk/content/datasheets/thermalPrinter-CommandSet.pdf
@@ -181,6 +182,7 @@ class CPWebservice(object):
 			payload['lid']=self._macaddress
 			payload['lip']=self._ipaddress
 			payload['agent']=CLOUDPRINT_AGENT
+			payload['version']=CLOUDPRINT_VERSION
 			payload['session']=key
 			payload['uptime']=self.runtime()
 			url=self.url()
@@ -232,6 +234,10 @@ class CPWebservice(object):
 
 	def buttonHold(self):
 		return self.handleAndProcessJobResponse('buttonhold')
+
+	def pong(self):
+		self.updateIpAddress()
+		return self.handleAndProcessJobResponse('pong')
 
 
 class CPWebserviceFlag(object):
@@ -687,6 +693,9 @@ class CPJobs(CPThread):
 					if name=='reboot':
 						self.reboot()
 					elif name=='restart':
+						self.parent.stop()
+					elif name=='ping':
+						self.jobs....
 						self.parent.stop()
 				node=node.nextSibling
 			except:
