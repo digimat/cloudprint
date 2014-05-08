@@ -2,20 +2,18 @@
 
 SERVICEPATH=/home/pi/python/cloudprint
 DEFAULTSERVICE=cloudprint.py
-SERVICE=${1:-$DEFAULTSERVICE}
 
-logger "Upgrading service [$SERVICE] via git if needed..."
+SERVICE=${1:-$DEFAULTSERVICE}
 
 if [ -d $SERVICEPATH ]; then
 	cd $SERVICEPATH
-	git fetch origin
-	git reset --hard origin/master
-	 
+	[ -f $SERVICEPATH/service.upgrade ] && . $SERVICEPATH/service.upgrade
+
 	if [ -f $SERVICEPATH/$SERVICE ]; then
 		logger "Launching service [$SERVICE]"
 		exec /usr/bin/python $SERVICEPATH/$SERVICE
 	fi
 fi
 
-logger "$0:unable to find service [$SERVICE]"
+logger "Unable to find service [$SERVICE]"
 /bin/sleep 15

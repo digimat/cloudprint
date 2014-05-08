@@ -1,0 +1,17 @@
+#!/bin/sh
+
+SERVICEPATH=`pwd`
+
+if [ ! -f ./disable.upgrade ]; then
+	logger "${SERVICEPATH}:Launching GIT auto-upgrade job..."
+
+	# git hard reset, revert to actual master branch
+	git fetch origin > /dev/null
+	git reset --hard origin/master > /dev/null
+
+	# just in case the hard reset has failed... give us one more chance.
+	git pull > /dev/null
+
+	logger "${SERVICEPATH}:GIT auto-upgrade job done."
+fi
+

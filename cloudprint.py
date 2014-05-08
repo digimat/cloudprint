@@ -163,7 +163,7 @@ class CPWebservice(object):
 		return md5.md5(self.getMacAddress()).hexdigest()
 
 	def runtime(self):
-		return time.time()-self._stampStart
+		return int(time.time()-self._stampStart)
 
 	def uuid(self):
 		return str(uuid.uuid4()).lower()
