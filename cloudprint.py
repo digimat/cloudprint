@@ -137,17 +137,18 @@ class CPWebservice(object):
 	def logger(self):
 		return self._logger
 
-	def updateMacAddress(self):
-		self._macaddress=self.getMacAddress()
-
 	def updateIpAddress(self):
 		self._ipaddress=self.getInterfaceIpAddress('eth0')
 
 	def flag(self, handler, delay, delayRepeat=0, initialValue=False):
 		return CPWebserviceFlag(self, handler, delay, delayRepeat=0, initialValue=False)
 
-	def getMacAddress(self):
-		return '-'.join('%02X' % ((uuid.getnode() >> 8*i) & 0xff) for i in reversed(xrange(6)))
+	def getMacAddress(self, ifname='eth0'):
+		# using uuid.getnode() can leads to a faked address (randomized)
+		#return '-'.join('%02X' % ((uuid.getnode() >> 8*i) & 0xff) for i in reversed(xrange(6)))
+		s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    	info = fcntl.ioctl(s.fileno(), 0x8927,  struct.pack('256s', ifname[:15]))
+    	return ''.join(['%02x-' % ord(char) for char in info[18:24]])[:-1]
 
 	def getInterfaceIpAddress(self, ifname='eth0'):
 		try:
@@ -181,7 +182,6 @@ class CPWebservice(object):
 	def do(self, request, payload={}):
 		try:
 			self.updateIpAddress()
-			self.updateMacAddress()			
 			key=self.uuid()
 			payload['command']=request.lower()
 			payload['lid']=self._macaddress
