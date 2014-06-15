@@ -78,7 +78,7 @@ class Adafruit_Thermal(Serial):
 		# power up -- it needs a moment to cold boot and initialize.
 		# Allow at least 1/2 sec of uptime before printer can
 		# receive data.
-		self.timeoutSet(0.5)
+		self.timeoutSet(1.0)
 
 		self.wake()
 		self.reset()
@@ -520,7 +520,7 @@ class Adafruit_Thermal(Serial):
 	def wake(self):
 		self.timeoutSet(0);
 		self.writeBytes(255)
-		for i in range(10):
+		for i in range(20):
 			self.writeBytes(27)
 			self.timeoutSet(0.1)
 
