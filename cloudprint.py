@@ -147,8 +147,8 @@ class CPWebservice(object):
 		# using uuid.getnode() can leads to a faked address (randomized)
 		#return '-'.join('%02X' % ((uuid.getnode() >> 8*i) & 0xff) for i in reversed(xrange(6)))
 		s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    	info = fcntl.ioctl(s.fileno(), 0x8927,  struct.pack('256s', ifname[:15]))
-    	return ''.join(['%02x-' % ord(char) for char in info[18:24]])[:-1]
+		info = fcntl.ioctl(s.fileno(), 0x8927,  struct.pack('256s', ifname[:15]))
+		return ''.join(['%02x-' % ord(char) for char in info[18:24]])[:-1]
 
 	def getInterfaceIpAddress(self, ifname='eth0'):
 		try:
