@@ -137,6 +137,9 @@ class CPWebservice(object):
 	def logger(self):
 		return self._logger
 
+	def updateMacAddress(self):
+		self._macaddress=self.getMacAddress()
+
 	def updateIpAddress(self):
 		self._ipaddress=self.getInterfaceIpAddress('eth0')
 
@@ -154,7 +157,7 @@ class CPWebservice(object):
 				struct.pack('256s', ifname[:15])
 				)[20:24])		
 		except:
-			pass
+			self.logger.error('webservice:unable retrieve ip address!')
 
 	def url(self):
 		return 'http://digimat.ch/phpdev/cloudprint/cloudprint.php'
@@ -177,6 +180,8 @@ class CPWebservice(object):
 
 	def do(self, request, payload={}):
 		try:
+			self.updateIpAddress()
+			self.updateMacAddress()			
 			key=self.uuid()
 			payload['command']=request.lower()
 			payload['lid']=self._macaddress
@@ -212,7 +217,7 @@ class CPWebservice(object):
 		try:
 			return self.do(handler, payload)
 		except:
-			pass
+			self.logger.error('webservice:handle(%s) exception occured!' % handler)
 
 	def handleAndProcessJobResponse(self, handler, payload={}):
 		job=self.handle(handler, payload)
@@ -224,19 +229,17 @@ class CPWebservice(object):
 		return self.handle('getfactorysettings')
 
 	def buttonTap(self):
-		self.updateIpAddress()
 		if not self.handleAndProcessJobResponse('buttontap'):
 			try:
 				job="<root><ticket><center>MAC:%s<feed/>IP:%s<feed/></center></ticket></root>" % (self._macaddress, self._ipaddress)
 				self.parent.submitXmlJobFromString(job)
 			except:
-				pass
+				self.logger.error('webservice:buttonTap exception occured!')
 
 	def buttonHold(self):
 		return self.handleAndProcessJobResponse('buttonhold')
 
 	def pong(self):
-		self.updateIpAddress()
 		return self.handleAndProcessJobResponse('pong')
 
 
