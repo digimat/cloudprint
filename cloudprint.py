@@ -213,6 +213,7 @@ class CPWebservice(object):
 		except:
 			pass
 
+
 	def handle(self, handler, payload={}):
 		try:
 			return self.do(handler, payload)
@@ -890,6 +891,8 @@ class CPMailBox(CPThread):
 			except:
 				self.logger.error('imap:error occured while fetching message!')
 				self.disconnect()
+		else:
+			self.parent.beep(2)
 
 
 	def deleteMessage(self):
